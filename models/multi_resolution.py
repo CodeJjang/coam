@@ -17,7 +17,8 @@ import utils.geometry_utils as geometry_utils
 import models.architectures as architectures
 import models.losses as losses
 
-import segmentation_models_pytorch as smp
+# import segmentation_models_pytorch as smp
+import models.unet.unet as smp
 
 import numpy as np
 
@@ -409,7 +410,7 @@ class MultiResolutionFPNMixConfClassBroadcast(nn.Module):
 
         # Use a pretrained ResNet for the initial features
         if opts.network == 'resnet50' or True:
-            self.features = smp.Unet(opts.network, decoder_channels=(256,256,128,128,64), 
+            self.features = smp.Unet(opts.network, decoder_channels=(256,256,128,128,64),
                                         encoder_depth=5, classes=64, encoder_weights='imagenet', full=True)
         else:
             self.features = smp.Unet('resnet18', decoder_channels=(256,128,128,64,64), 
