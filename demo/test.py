@@ -124,8 +124,8 @@ def best_matches(sim, cond1=None, cond2=None, topk=8000, T=0.3, nn=1):
     return matches.t(), None
 
 
-def visualise_keypoints(im1, im2, pts, conf1=None, conf2=None):
-    # new_cmap = rand_cmap(100, type='bright', first_color_black=True, last_color_black=False, verbose=False)
+def visualise_keypoints(im1, im2, pts, conf1=None, conf2=None, vis_inliners=True, vis_outliers=True):
+    new_cmap = rand_cmap(100, type='bright', first_color_black=True, last_color_black=False, verbose=False)
 
     pts = [pts[0], pts[1]]
 
@@ -134,18 +134,34 @@ def visualise_keypoints(im1, im2, pts, conf1=None, conf2=None):
         draw = ImageDraw.Draw(im)
         r = 4
         for j in range(0, ptsA.shape[0]):
-            draw.ellipse([ptsA[j, 0] - r, ptsA[j, 1] - r, ptsA[j, 0] + r, ptsA[j, 1] + r], fill=(255, 0, 0, 255))
-            draw.ellipse([ptsB[j, 0] - r + imW, ptsB[j, 1] - r, ptsB[j, 0] + r + imW, ptsB[j, 1] + r],
-                         fill=(255, 0, 0, 255))
+            R, G, B, A = new_cmap(j)
             is_inline = np.linalg.norm(ptsA[j].detach().cpu().numpy() - ptsB[j].detach().cpu().numpy()) < 5
-            if is_inline:
+            if is_inline and vis_inliners:
+                draw.ellipse([ptsA[j, 0] - r, ptsA[j, 1] - r, ptsA[j, 0] + r, ptsA[j, 1] + r], fill=(255, 0, 0, 255))
+                draw.ellipse([ptsB[j, 0] - r + imW, ptsB[j, 1] - r, ptsB[j, 0] + r + imW, ptsB[j, 1] + r],
+                             fill=(255, 0, 0, 255))
                 R, G, B, A = 0, 255, 0, 1
-            else:
+                draw.line([ptsA[j, 0], ptsA[j, 1], ptsB[j, 0] + imW, ptsB[j, 1]], width=r, fill=(int(R * 255),
+                                                                                                 int(G * 255),
+                                                                                                 int(B * 255),
+                                                                                                 int(A * 255)))
+            elif not is_inline and vis_outliers:
+                draw.ellipse([ptsA[j, 0] - r, ptsA[j, 1] - r, ptsA[j, 0] + r, ptsA[j, 1] + r], fill=(255, 0, 0, 255))
+                draw.ellipse([ptsB[j, 0] - r + imW, ptsB[j, 1] - r, ptsB[j, 0] + r + imW, ptsB[j, 1] + r],
+                             fill=(255, 0, 0, 255))
                 R, G, B, A = 255, 0, 0, 1
-            draw.line([ptsA[j, 0], ptsA[j, 1], ptsB[j, 0] + imW, ptsB[j, 1]], width=r, fill=(int(R * 255),
-                                                                                             int(G * 255),
-                                                                                             int(B * 255),
-                                                                                             int(A * 255)))
+                draw.line([ptsA[j, 0], ptsA[j, 1], ptsB[j, 0] + imW, ptsB[j, 1]], width=r, fill=(int(R * 255),
+                                                                                                 int(G * 255),
+                                                                                                 int(B * 255),
+                                                                                                 int(A * 255)))
+            elif not vis_inliners and not vis_outliers:
+                draw.ellipse([ptsA[j, 0] - r, ptsA[j, 1] - r, ptsA[j, 0] + r, ptsA[j, 1] + r], fill=(255, 0, 0, 255))
+                draw.ellipse([ptsB[j, 0] - r + imW, ptsB[j, 1] - r, ptsB[j, 0] + r + imW, ptsB[j, 1] + r],
+                             fill=(255, 0, 0, 255))
+                draw.line([ptsA[j, 0], ptsA[j, 1], ptsB[j, 0] + imW, ptsB[j, 1]], width=r, fill=(int(R * 255),
+                                                                                                 int(G * 255),
+                                                                                                 int(B * 255),
+                                                                                                 int(A * 255)))
 
     fig = plt.figure(figsize=(30, 15))
     axes = fig.subplots(nrows=1, ncols=1)
@@ -179,16 +195,16 @@ def visualise_keypoints(im1, im2, pts, conf1=None, conf2=None):
     axes.imshow(im)
 
     plt.axis('off')
-
     return im
 
 
 class GetMatches:
-    def __init__(self, model, desc_model, transform, use_external_desc=False):
+    def __init__(self, model, desc_model, transform, use_external_desc=False, use_original_keypoints=True):
         self.model = model
         self.desc_model = desc_model
         self.transform = transform
         self.use_external_desc = use_external_desc
+        self.use_original_keypoints = use_original_keypoints
 
     def iterate(self, im1_orig, im2_orig, iters=1):
         trans_imgs = [np.array(im1_orig.resize(im2_orig.size))]
@@ -216,31 +232,23 @@ class GetMatches:
         kps2[:, 0] = (results['kp2'][:, 0] / (1 * 2.) + 0.5) * W2
         kps2[:, 1] = (results['kp2'][:, 1] / (1 * 2.) + 0.5) * H2
 
-        if not self.use_external_desc:
+        if not self.use_external_desc and self.use_original_keypoints:
             descriptors = results['match'].view(128 * 128, 128 * 128)
         else:
             im1 = transforms.Grayscale()(im1)
             im2 = transforms.Grayscale()(im2)
-            descriptors = self.sample_descriptors(im1, im2, self.desc_model, results['kp1'], results['kp2'])
+            descriptors = self.sample_descriptors_uniformly(im1, im2, self.desc_model, results['kp1'], results['kp2'])
         matches, ratio = best_matches(descriptors, topk=200, T=0)
         _, idxs = matches[:, 0].sort(dim=0)
         matches = matches[idxs, :]
         # matches = matches[1::(100 // 20), :][:, :]
 
-        return kps1[matches[:, 0], :], kps2[matches[:, 1], :]
+        kps1, kps2 = kps1[matches[:, 0], :], kps2[matches[:, 1], :]
+        if self.use_external_desc and not self.use_original_keypoints:
+            self.extract_descriptors_around_keypoints(im1_orig, im2_orig, kps1, kps2)
+        return kps1, kps2
 
-    def sample_descriptors(self, im1, im2, desc_model, kp1, kp2):
-        _, W1, H1 = im1.size()
-        _, W2, H2 = im2.size()
-
-        kps1 = kp1.clone()
-        kps1[:, 0] = (kp1[:, 0] / (1 * 2.) + 0.5) * W1
-        kps1[:, 1] = (kp1[:, 1] / (1 * 2.) + 0.5) * H1
-
-        kps2 = kp2.clone()
-        kps2[:, 0] = (kp2[:, 0] / (1 * 2.) + 0.5) * W2
-        kps2[:, 1] = (kp2[:, 1] / (1 * 2.) + 0.5) * H2
-
+    def sample_descriptors_uniformly(self, im1, im2, desc_model):
         im1 = im1.unsqueeze(0)
         im1 = F.pad(im1, (30, 30, 30, 30))
         im2 = im2.unsqueeze(0)
@@ -258,6 +266,9 @@ class GetMatches:
                 desc21[i: i+step_size] = embs['Emb2'].detach().cpu()
         sim_matrix = torch.mm(desc12, desc21.transpose(0, 1))
         return sim_matrix
+
+    def extract_descriptors_around_keypoints(self, im1_orig, im2_orig, kps1, kps2):
+        for kp1, kp2 in zip(kps1, kps2)
 
 
 
