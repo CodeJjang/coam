@@ -119,9 +119,8 @@ def best_matches(sim, cond1=None, cond2=None, topk=8000, T=0.3, nn=1):
 
         matches = torch.stack([cond_ids1, cond_ids2])
 
-    matches = matches[:, ids[-topk:]]
-
-    return matches.t(), None
+    top_matches = matches[:, ids[-topk:]]
+    return top_matches.t(), None
 
 
 def visualise_keypoints(im1, im2, pts, conf1=None, conf2=None, vis_inliners=True, vis_outliers=True):
@@ -232,20 +231,33 @@ class GetMatches:
         kps2[:, 0] = (results['kp2'][:, 0] / (1 * 2.) + 0.5) * W2
         kps2[:, 1] = (results['kp2'][:, 1] / (1 * 2.) + 0.5) * H2
 
-        if not self.use_external_desc and self.use_original_keypoints:
-            descriptors = results['match'].view(128 * 128, 128 * 128)
+        descriptors = results['match'].view(128 * 128, 128 * 128)
+        # if self.use_external_desc and not self.use_original_keypoints:
+        #     descriptors = self.extract_descriptors_around_keypoints(im1_orig, im2_orig, kps1, kps2)
+        # else:
+        #     im1 = transforms.Grayscale()(im1)
+        #     im2 = transforms.Grayscale()(im2)
+        #     descriptors = self.sample_descriptors_uniformly(im1, im2, self.desc_model, results['kp1'], results['kp2'])
+        if self.use_external_desc and not self.use_original_keypoints:
+            matches, _ = best_matches(descriptors, topk=300, T=0)
+            _, idxs = matches[:, 0].sort(dim=0)
+            matches = matches[idxs, :]
+            kps1, kps2 = kps1[matches[:, 0], :], kps2[matches[:, 1], :]
+            descriptors = self.extract_descriptors_around_keypoints(im1_orig, im2_orig, kps1, kps2)
+            matches, _ = best_matches(descriptors, topk=200, T=0)
         else:
-            im1 = transforms.Grayscale()(im1)
-            im2 = transforms.Grayscale()(im2)
-            descriptors = self.sample_descriptors_uniformly(im1, im2, self.desc_model, results['kp1'], results['kp2'])
-        matches, ratio = best_matches(descriptors, topk=200, T=0)
+            matches, ratio = best_matches(descriptors, topk=200, T=0)
         _, idxs = matches[:, 0].sort(dim=0)
         matches = matches[idxs, :]
         # matches = matches[1::(100 // 20), :][:, :]
 
         kps1, kps2 = kps1[matches[:, 0], :], kps2[matches[:, 1], :]
-        if self.use_external_desc and not self.use_original_keypoints:
-            self.extract_descriptors_around_keypoints(im1_orig, im2_orig, kps1, kps2)
+        # if self.use_external_desc and not self.use_original_keypoints:
+        #     descriptors = self.extract_descriptors_around_keypoints(im1_orig, im2_orig, kps1, kps2)
+        #     matches, ratio = best_matches(descriptors, topk=200, T=0)
+        #     _, idxs = matches[:, 0].sort(dim=0)
+        #     matches = matches[idxs, :]
+        #     kps1, kps2 = kps1[matches[:, 0], :], kps2[matches[:, 1], :]
         return kps1, kps2
 
     def sample_descriptors_uniformly(self, im1, im2, desc_model):
@@ -268,8 +280,41 @@ class GetMatches:
         return sim_matrix
 
     def extract_descriptors_around_keypoints(self, im1_orig, im2_orig, kps1, kps2):
-        for kp1, kp2 in zip(kps1, kps2)
+        transform = transforms.Compose([
+            transforms.Grayscale(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5])
+        ])
+        im1, im2 = transform(im1_orig), transform(im2_orig)
+        _, im1_h, im1_w = im1.shape
+        _, im2_h, im2_w = im2.shape
+        patch_h = patch_w = 64
+        im1 = F.pad(im1, (patch_h // 2, patch_h // 2, patch_h // 2, patch_h // 2))
+        im2 = F.pad(im2, (patch_h // 2, patch_h // 2, patch_h // 2, patch_h // 2))
+        patches = np.zeros((len(kps1), 2, patch_h, patch_w))
+        for i, (kp1, kp2) in enumerate(zip(kps1, kps2)):
+            kp1, kp2 = kp1 + patch_h // 2, kp2 + patch_h // 2
+            for j, (kp, im) in enumerate(zip([kp1, kp2], [im1, im2])):
+                min_x = int(kp[0]) - patch_h // 2
+                max_x = int(kp[0]) + patch_h // 2
+                min_y = int(kp[1]) - patch_h // 2
+                max_y = int(kp[1]) + patch_h // 2
+                patch = im.squeeze()[min_y: max_y, min_x: max_x]
+                patches[i, j] = patch
 
+        patches = torch.from_numpy(patches)
+        desc12 = torch.zeros((len(kps1), 128), dtype=torch.float32)
+        desc21 = torch.zeros((len(kps2), 128), dtype=torch.float32)
+        step_size = 1000
+        im1_patches = patches[:, 0].unsqueeze(1).float()
+        im2_patches = patches[:, 1].unsqueeze(1).float()
+        with torch.no_grad():
+            for i in range(0, len(im1_patches.squeeze()), step_size):
+                embs = self.desc_model(im1_patches[i: i+step_size].cuda(), im2_patches[i: i+step_size].cuda())
+                desc12[i: i+step_size] = embs['Emb1'].detach().cpu()
+                desc21[i: i+step_size] = embs['Emb2'].detach().cpu()
+        sim_matrix = torch.mm(desc12, desc21.transpose(0, 1))
+        return sim_matrix
 
 
 def load_coam_model():
@@ -310,8 +355,10 @@ def main():
     # im2 = './demo/imgs/col2.jpeg'
     im1 = 'D:/multisensor/datasets/Vis-Nir/data/water/0003_rgb.tiff'
     im2 = 'D:/multisensor/datasets/Vis-Nir/data/water/0003_nir.tiff'
+    # im1 = 'D:/multisensor/datasets/Vis-Nir/data/field/0006_rgb.tiff'
+    # im2 = 'D:/multisensor/datasets/Vis-Nir/data/field/0006_nir.tiff'
     use_mt_model = True
-
+    use_original_keypoints = False
     im1_orig = Image.open(im1).convert("RGB")
     im2_orig = Image.open(im2).convert("RGB")
 
@@ -328,7 +375,8 @@ def main():
     axes[1].imshow(im2_orig)
     axes[1].axis('off')
 
-    get_matches = GetMatches(coam_model, mt_model, transform, use_external_desc=use_mt_model)
+    get_matches = GetMatches(coam_model, mt_model, transform, use_external_desc=use_mt_model,
+                             use_original_keypoints=use_original_keypoints)
     kps1, kps2 = get_matches.iterate(im1_orig, im2_orig, iters=2)
 
     im = visualise_keypoints(im1_orig, im2_orig, (kps1, kps2))

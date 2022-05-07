@@ -568,10 +568,10 @@ class MultiResolutionFPNMixConfClassBroadcast(nn.Module):
             conf_feat = feat
         else:
             conf_feat = feat.detach()
-        confidence = self.regress_conf(conf_feat)
-        confidence = F.grid_sample(confidence, sampler)
+        confidence = self.regress_conf(conf_feat) # B, 1, 512, 512
+        confidence = F.grid_sample(confidence, sampler)# B, 1, 16384
 
-        sFeat = F.grid_sample(feat, sampler)
+        sFeat = F.grid_sample(feat, sampler) # 1, 64, 1, 16384
         sFeat = architectures.NormBlock(dim=1)(sFeat).view(B,-1,S)
 
         return sFeat, confidence.squeeze()
@@ -618,13 +618,13 @@ class MultiResolutionFPNMixConfClassBroadcast(nn.Module):
         cond1 = self.features.encoder(image1)
         cond2 = self.features.encoder(image2)
 
-        featsim1 = self.obtain_descriptors(cond1, cond2)
+        featsim1 = self.obtain_descriptors(cond1, cond2) # B, 64, 512, 512
         featsim2 = self.obtain_descriptors(cond2, cond1)
 
-        confim1 = self.regress_conf(featsim1)
+        confim1 = self.regress_conf(featsim1) # B, 1, 512, 512
         confim2 = self.regress_conf(featsim2)
 
-        maskim1 = self.binary_class(featsim1)
+        maskim1 = self.binary_class(featsim1) # B, 1, 512, 512
         maskim2 = self.binary_class(featsim2)
         
 
@@ -639,13 +639,13 @@ class MultiResolutionFPNMixConfClassBroadcast(nn.Module):
         else:
             B = featsim1.size(0)
 
-            origSample1 = sampler_values((1,1,sz1[1],sz1[0]), r_im1[0], r_im1[1])
+            origSample1 = sampler_values((1,1,sz1[1],sz1[0]), r_im1[0], r_im1[1]) # B, 16384, 2
             origSample1 = origSample1.to(featsim1.device)
 
             origSample2 = sampler_values((1,1,sz2[1],sz2[0]), r_im2[0], r_im2[1])
             origSample2 = origSample2.to(featsim1.device)
 
-            feats1, conf1 = self.sample_features(featsim1, origSample1.repeat(B,1,1))
+            feats1, conf1 = self.sample_features(featsim1, origSample1.repeat(B,1,1)) # (B, 64, 16384), (16384)
             feats2, conf2 = self.sample_features(featsim2, origSample2.repeat(B,1,1))
 
             if factor > 1:
@@ -692,7 +692,7 @@ class MultiResolutionFPNMixConfClassBroadcast(nn.Module):
         if use_conf:
             match = torch.einsum('bci,bcj->bij', \
                     feats1 * conf1.unsqueeze(1), \
-                    feats2 * conf2.unsqueeze(1)).squeeze()
+                    feats2 * conf2.unsqueeze(1)).squeeze() # 16384, 16384
         else:
             print("Warning: not using conf!")
             match = torch.einsum('bci,bcj->bij', feats1.unsqueeze(0), feats2.unsqueeze(0)).squeeze()
