@@ -13,7 +13,6 @@ import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
 
 import glob
-import matplotlib.pyplot as plt
 
 from PIL import Image,ImageDraw
 import numpy as np
